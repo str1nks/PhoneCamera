@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#16191e">
+<title>Phone Cam Bridge</title>
+<style>
+  :root {
+    --bg: #16191e; --panel: #1f242b; --line: #313944; --text: #e8ecf0; --muted: #8e9aa8;
+    --go: #f2c94c; --live: #ff4d4f; --ok: #3ddc84;
+    --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.4 var(--font); }
+  body { padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); max-width: 560px; margin: 0 auto; }
+
+  .viewfinder { position: relative; background: #000; aspect-ratio: 16 / 10; overflow: hidden; }
+  .viewfinder video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .tally { position: absolute; top: 12px; left: 12px; display: flex; align-items: center; gap: 8px;
+           padding: 5px 10px; border-radius: 999px; background: rgba(0,0,0,.55); font-size: 13px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+  .tally[data-state="live"] .dot { background: var(--live); box-shadow: 0 0 8px var(--live); }
+  .tally[data-state="wait"] .dot { background: var(--go); }
+  .readout { position: absolute; left: 12px; right: 12px; bottom: 10px; font-size: 12px; color: #cfd6de;
+             font-variant-numeric: tabular-nums; text-shadow: 0 1px 3px #000; }
+
+  .main { padding: 14px 14px 6px; }
+  #go { width: 100%; padding: 16px; border: 0; border-radius: 12px; font: 600 17px var(--font);
+        background: var(--go); color: #1b1600; }
+  #go[data-on="1"] { background: var(--live); color: #fff; }
+  #msg { min-height: 1.4em; margin: 10px 2px 0; font-size: 14px; color: var(--muted); }
+  #msg.err { color: #ff8a8c; }
+
+  details { margin: 10px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+  summary { padding: 14px; font-weight: 600; cursor: pointer; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: "+"; float: right; color: var(--muted); }
+  details[open] summary::after { content: "–"; }
+  .body { padding: 0 14px 14px; display: grid; gap: 12px; }
+
+  label.f { display: grid; gap: 5px; font-size: 13px; color: var(--muted); }
+  select, input[type=range] { width: 100%; }
+  select { padding: 11px 10px; border-radius: 8px; border: 1px solid var(--line); background: #11151a; color: var(--text); font: 15px var(--font); }
+  input[type=range] { accent-color: var(--go); }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 15px; }
+  .row input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--go); }
+  .val { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
+  .sub { font-size: 12px; color: var(--muted); margin: 0; }
+  .caps { display: grid; gap: 12px; }
+  .caps:empty { display: none; }
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  footer { padding: 8px 18px 28px; font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<div class="viewfinder">
+  <video id="preview" autoplay muted playsinline></video>
+  <div class="tally" id="tally" data-state="off"><span class="dot"></span><span id="tallyText">Не подключено</span></div>
+  <div class="readout" id="readout"></div>
+</div>
+
+<div class="main">
+  <button id="go" data-on="0">Подключиться к ПК</button>
+  <p id="msg"></p>
+</div>
+
+<details open>
+  <summary>Камера</summary>
+  <div class="body">
+    <label class="f">Камера
+      <select id="camSel"><option value="">Авто</option></select>
+    </label>
+    <label class="f">Сторона (если камера «Авто»)
+      <select id="facing">
+        <option value="">Любая</option>
+        <option value="user">Фронтальная</option>
+        <option value="environment">Основная (задняя)</option>
+      </select>
+    </label>
+    <div class="split">
+      <label class="f">Разрешение
+        <select id="res">
+          <option value="640x360">360p</option>
+          <option value="640x480">480p (4:3)</option>
+          <option value="1280x720" selected>720p</option>
+          <option value="1920x1080">1080p</option>
+          <option value="3840x2160">4K</option>
+        </select>
+      </label>
+      <label class="f">Кадров/с
+        <select id="fps">
+          <option>15</option><option>24</option><option selected>30</option><option>60</option>
+        </select>
+      </label>
+    </div>
+    <label class="f">Качество картинки (JPEG)
+      <select id="vquality">
+        <option value="40">40% — минимум трафика</option>
+        <option value="50">50%</option>
+        <option value="60" selected>60%</option>
+        <option value="70">70%</option>
+        <option value="80">80%</option>
+        <option value="90">90% — максимум качества</option>
+      </select>
+    </label>
+    <p class="sub">Видео идёт по TCP кадрами JPEG: без потерь и «мозаики». 720p при 60% — около 10–15 Мбит/с. Если картинка запаздывает, снизьте качество или разрешение.</p>
+    <label class="row">Отключить картинку <input type="checkbox" id="vOff"></label>
+    <div class="caps" id="camCaps"></div>
+    <p class="sub" id="capsNote"></p>
+  </div>
+</details>
+
+<details>
+  <summary>Вывод на ПК</summary>
+  <div class="body">
+    <label class="row">Зеркалить картинку <input type="checkbox" id="mirror"></label>
+    <label class="f">Поворот картинки
+      <select id="rotate">
+        <option value="0">0°</option><option value="90">90° по часовой</option>
+        <option value="180">180°</option><option value="270">90° против часовой</option>
+      </select>
+    </label>
+    <div class="split">
+      <label class="f">Разрешение на ПК
+        <select id="outRes">
+          <option value="640x360">360p</option>
+          <option value="854x480">480p</option>
+          <option value="1280x720" selected>720p</option>
+          <option value="1920x1080">1080p</option>
+          <option value="2560x1440">1440p</option>
+          <option value="3840x2160">4K</option>
+        </select>
+      </label>
+      <label class="f">Кадров/с на ПК
+        <select id="outFps">
+          <option>15</option><option>24</option><option selected>30</option><option>60</option>
+        </select>
+      </label>
+    </div>
+    <p class="sub">Размер и частота виртуальной камеры. Программам, которые уже используют камеру, может понадобиться переоткрыть её.</p>
+    <p class="sub" id="pcInfo">Подключитесь, чтобы увидеть устройства на ПК.</p>
+  </div>
+</details>
+
+<footer>Если картинка лежит на боку — поверните её в «Вывод на ПК» или держите телефон горизонтально.</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+const FIELDS = ['camSel','facing','res','fps','vquality','vOff','mirror','rotate','outRes','outFps'];
+
+let vStream = null;
+let wanted = false, reconnectTimer = null, statsTimer = null, wakeLock = null;
+let advancedVals = {};
+let saved = {};
+let outTouched = false; // меняли ли разрешение/FPS выхода на ПК (иначе берём значения сервера)
+let statText = '';
+
+/* ───────── настройки в localStorage ───────── */
+function loadSettings() {
+  try { saved = JSON.parse(localStorage.getItem('pcb') || '{}'); } catch { saved = {}; }
+  for (const id of FIELDS) {
+    if (id === 'camSel' || !(id in saved)) continue;
+    const el = $(id);
+    if (el.type === 'checkbox') el.checked = saved[id]; else el.value = saved[id];
+  }
+  outTouched = 'outRes' in saved;
+}
+function saveSettings() {
+  try {
+    const s = {};
+    for (const id of FIELDS) { const el = $(id); s[id] = el.type === 'checkbox' ? el.checked : el.value; }
+    localStorage.setItem('pcb', JSON.stringify(s));
+  } catch {}
+}
+
+/* ───────── утилиты ───────── */
+function setMsg(t, err) { $('msg').textContent = t || ''; $('msg').className = err ? 'err' : ''; }
+function setTally(state, text) { $('tally').dataset.state = state; $('tallyText').textContent = text; }
+const debounce = (fn, ms = 300) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+const vTrack = () => vStream && vStream.getVideoTracks()[0];
+
+function videoConstraints() {
+  const [w, h] = $('res').value.split('x').map(Number);
+  const v = { width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: +$('fps').value } };
+  if ($('camSel').value) v.deviceId = { exact: $('camSel').value };
+  else if ($('facing').value) v.facingMode = { ideal: $('facing').value };
+  return v;
+}
+async function gum(c) {
+  try {
+    return await navigator.mediaDevices.getUserMedia(c);
+  } catch (e) {
+    if (e.name !== 'OverconstrainedError' && e.name !== 'NotFoundError') throw e;
+    const strip = o => (o && typeof o === 'object') ? Object.fromEntries(Object.entries(o).filter(([k]) => k !== 'deviceId')) : o;
+    return await navigator.mediaDevices.getUserMedia({ video: strip(c.video) });
+  }
+}
+
+/* ───────── устройства ───────── */
+async function populateDevices() {
+  const list = await navigator.mediaDevices.enumerateDevices();
+  const fill = (sel, kind, prefix, key) => {
+    const cur = $(sel).value || saved[sel] || '';
+    $(sel).innerHTML = '<option value="">Авто</option>';
+    let n = 0;
+    for (const d of list.filter(d => d.kind === kind)) {
+      n++;
+      const o = document.createElement('option');
+      o.value = d.deviceId; o.textContent = d.label || `${prefix} ${n}`;
+      $(sel).appendChild(o);
+    }
+    if ([...$(sel).options].some(o => o.value === cur)) $(sel).value = cur;
+  };
+  fill('camSel', 'videoinput', 'Камера');
+  sendStateSoon();
+}
+
+/* ───────── превью, индикатор, возможности камеры ───────── */
+function updateReadout() {
+  const t = vTrack(); let s = '';
+  if (t) { const st = t.getSettings(); if (st.width) s = `${st.width}×${st.height} · ${Math.round(st.frameRate || 0)} fps`; }
+  $('readout').textContent = [s, statText].filter(Boolean).join(' · ');
+}
+function attachVideo() { $('preview').srcObject = vStream; armCapture(); updateReadout(); }
+
+const CAP_DEFS = [
+  ['zoom', 'Зум'], ['torch', 'Вспышка'], ['exposureMode', 'Режим экспозиции'], ['exposureCompensation', 'Экспокоррекция'],
+  ['focusMode', 'Режим фокуса'], ['focusDistance', 'Дистанция фокуса'], ['whiteBalanceMode', 'Баланс белого'],
+  ['colorTemperature', 'Цветовая температура'], ['iso', 'ISO'], ['brightness', 'Яркость'],
+  ['contrast', 'Контраст'], ['saturation', 'Насыщенность'], ['sharpness', 'Резкость'],
+];
+async function setAdvanced(k, v) {
+  const prev = advancedVals[k];
+  advancedVals[k] = v;
+  const t = vTrack(); if (!t) return false;
+  try { await t.applyConstraints({ advanced: [{ [k]: v }] }); updateReadout(); return true; }
+  catch (e) {
+    if (prev === undefined) delete advancedVals[k]; else advancedVals[k] = prev;
+    setMsg('Не удалось применить «' + k + '»: ' + e.message, true);
+    return false;
+  }
+}
+function buildCaps() {
+  const box = $('camCaps'); box.innerHTML = '';
+  capList = []; for (const k in capUI) delete capUI[k];
+  const t = vTrack();
+  const c = t && t.getCapabilities ? t.getCapabilities() : {};
+  const s = t ? t.getSettings() : {};
+  let n = 0;
+  for (const [k, label] of CAP_DEFS) {
+    if (!(k in c)) continue;
+    const cap = c[k]; let wrap;
+    if (k === 'torch') {
+      wrap = document.createElement('label'); wrap.className = 'row';
+      wrap.innerHTML = `${label} <input type="checkbox">`;
+      const cb = wrap.querySelector('input'); cb.checked = !!(advancedVals[k] ?? s[k]);
+      cb.onchange = () => { setAdvanced(k, cb.checked); sendStateSoon(); };
+      capUI[k] = v => { cb.checked = !!v; };
+      capList.push({ key: k, label, type: 'toggle', value: cb.checked });
+    } else if (Array.isArray(cap)) {
+      wrap = document.createElement('label'); wrap.className = 'f';
+      wrap.innerHTML = `${label}<select></select>`;
+      const sel = wrap.querySelector('select');
+      for (const o of cap) sel.add(new Option(o, o));
+      sel.value = advancedVals[k] ?? s[k] ?? cap[0];
+      sel.onchange = () => { setAdvanced(k, sel.value); sendStateSoon(); };
+      capUI[k] = v => { sel.value = v; };
+      capList.push({ key: k, label, type: 'select', value: sel.value, options: cap.map(o => [String(o), String(o)]) });
+    } else if (cap && typeof cap === 'object' && 'min' in cap) {
+      const step = cap.step || (cap.max - cap.min) / 100;
+      const cur = advancedVals[k] ?? s[k] ?? cap.min;
+      wrap = document.createElement('label'); wrap.className = 'f';
+      wrap.innerHTML = `<span>${label} <span class="val"></span></span><input type="range">`;
+      const r = wrap.querySelector('input'), val = wrap.querySelector('.val');
+      Object.assign(r, { min: cap.min, max: cap.max, step, value: cur });
+      val.textContent = (+cur).toFixed(step < 1 ? 2 : 0);
+      const showVal = v => { val.textContent = (+v).toFixed(step < 1 ? 2 : 0); };
+      r.oninput = () => showVal(r.value);
+      r.onchange = () => { setAdvanced(k, +r.value); sendStateSoon(); };
+      capUI[k] = v => { r.value = v; showVal(v); };
+      capList.push({ key: k, label, type: 'range', value: +cur, min: cap.min, max: cap.max, step });
+    } else continue;
+    box.appendChild(wrap); n++;
+  }
+  $('capsNote').textContent = n ? '' : 'Этот браузер не даёт управлять зумом, фокусом и экспозицией. В Chrome на Android они обычно доступны.';
+  sendStateSoon();
+}
+async function reapplyAdvanced() {
+  const t = vTrack(); if (!t || !t.getCapabilities) return;
+  const c = t.getCapabilities();
+  const adv = Object.entries(advancedVals).filter(([k]) => k in c).map(([k, v]) => ({ [k]: v }));
+  if (adv.length) { try { await t.applyConstraints({ advanced: adv }); } catch {} }
+}
+
+/* ───────── управление с ПК ─────────
+   Телефон сообщает ПК свои настройки (state), ПК присылает команды (set). Команды применяются
+   к тем же элементам страницы, что и ручные изменения, поэтому всё работает одинаково. */
+const REMOTE = [
+  ['camSel', 'Камера', 'cam'], ['facing', 'Сторона (если «Авто»)', 'cam'], ['res', 'Разрешение', 'cam'],
+  ['fps', 'Кадров/с', 'cam'], ['vquality', 'Качество JPEG', 'cam'], ['vOff', 'Отключить картинку', 'cam'],
+  ['mirror', 'Зеркалить картинку', 'out'], ['rotate', 'Поворот картинки', 'out'],
+  ['outRes', 'Разрешение на ПК', 'out'], ['outFps', 'Кадров/с на ПК', 'out'],
+];
+let capList = [];
+const capUI = {};
+
+function collectState() {
+  const fields = REMOTE.map(([id, label, group]) => {
+    const el = $(id);
+    if (el.type === 'checkbox') return { id, label, group, type: 'toggle', value: el.checked };
+    return { id, label, group, type: 'select', value: el.value,
+             options: [...el.options].map(o => [o.value, o.textContent.trim()]) };
+  });
+  const t = vTrack(), s = t ? t.getSettings() : {};
+  const caps = capList.map(c => ({ ...c, value: advancedVals[c.key] ?? s[c.key] ?? c.value }));
+  return { type: 'state', fields, caps };
+}
+function sendState() { if (wsOpen()) sendJSON(collectState()); }
+const sendStateSoon = debounce(sendState, 150);
+
+function remoteField(id, value) {
+  if (!REMOTE.some(r => r[0] === id)) return;
+  const el = $(id);
+  if (el.type === 'checkbox') el.checked = !!value;
+  else if ([...el.options].some(o => o.value === String(value))) el.value = String(value);
+  else return;
+  el.dispatchEvent(new Event('change')); // дальше как при ручном изменении: сохранить, применить, отправить состояние
+}
+async function remoteCap(k, value) {
+  const c = capList.find(x => x.key === k); if (!c) return;
+  const ok = await setAdvanced(k, value);
+  const t = vTrack();
+  const cur = ok ? value : (advancedVals[k] ?? (t ? t.getSettings()[k] : undefined));
+  if (cur !== undefined && capUI[k]) capUI[k](cur);
+  sendStateSoon();
+}
+
+/* ───────── перезапуск потоков при смене настроек ───────── */
+async function restartVideo(resetAdv) {
+  if (!vStream) return;
+  vStream.getTracks().forEach(t => t.stop());
+  if (resetAdv) advancedVals = {};
+  try {
+    const s = await gum({ video: videoConstraints() });
+    const t = s.getVideoTracks()[0];
+    vStream = new MediaStream([t]);
+    t.enabled = !$('vOff').checked;
+    attachVideo(); buildCaps(); await reapplyAdvanced(); updateReadout();
+    setMsg('');
+  } catch (e) { setMsg('Камера: ' + e.message, true); }
+}
+/* ───────── передача по WebSocket (TCP) ─────────
+   Бинарные сообщения: [1][JPEG] — кадр видео. Текст — JSON (ping, transform, state). */
+const outW = () => +$('outRes').value.split('x')[0];
+const outH = () => +$('outRes').value.split('x')[1];
+
+let ws = null, lastPong = 0, rtt = null;
+let sentBytes = 0, sentFrames = 0, skipFrames = 0, lastStatT = 0;
+let encBusy = false, lastSend = 0, lastFrameSize = 60000;
+let rvfcId = null, pollId = null;
+const FRAME_TAG = new Uint8Array([1]);
+const cv = document.createElement('canvas');
+const cx = cv.getContext('2d', { alpha: false });
+
+const wsOpen = () => ws && ws.readyState === WebSocket.OPEN;
+const sendJSON = o => { if (wsOpen()) ws.send(JSON.stringify(o)); };
+
+function sendControl() {
+  sendJSON({
+    type: 'transform', mirror: $('mirror').checked,
+    rotate: +$('rotate').value,
+    ...(outTouched ? { out: { w: outW(), h: outH(), fps: +$('outFps').value } } : {}),
+  });
+}
+
+// первый запуск: показываем значения, с которыми стартовал сервер
+function syncOut(o) {
+  const res = `${o.w}x${o.h}`;
+  if (![...$('outRes').options].some(x => x.value === res)) $('outRes').add(new Option(`${o.h}p (${o.w}×${o.h})`, res));
+  if (![...$('outFps').options].some(x => x.value === String(o.fps))) $('outFps').add(new Option(o.fps, o.fps));
+  $('outRes').value = res; $('outFps').value = String(o.fps);
+}
+
+function dropWs(reconnect) {
+  if (ws) {
+    const s = ws; ws = null;
+    s.onopen = s.onmessage = s.onclose = s.onerror = null;
+    try { s.close(); } catch {}
+  }
+  if (reconnect && wanted) {
+    setTally('wait', 'Переподключение…');
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => wanted && openWs(), 1500);
+  }
+}
+
+function openWs() {
+  dropWs(false);
+  clearTimeout(reconnectTimer);
+  setTally('wait', 'Подключение…');
+  const sock = new WebSocket(`wss://${location.host}/ws`);
+  ws = sock; lastPong = performance.now(); rtt = null;
+  sock.onopen = () => {
+    if (sock !== ws) return;
+    setTally('live', 'В эфире'); setMsg('');
+    sendControl();
+    sendState();
+  };
+  sock.onmessage = e => {
+    if (sock !== ws || typeof e.data !== 'string') return;
+    let m; try { m = JSON.parse(e.data); } catch { return; }
+    if (m.type === 'info') {
+      $('pcInfo').textContent = `На ПК: виртуальная камера ${m.video}.`;
+      if (m.out && !outTouched) { syncOut(m.out); sendStateSoon(); }
+    } else if (m.type === 'set') {
+      if (m.kind === 'field') remoteField(m.id, m.value);
+      else if (m.kind === 'cap') remoteCap(m.key, m.value);
+    } else if (m.type === 'pong') {
+      lastPong = performance.now();
+      if (typeof m.t === 'number') rtt = Math.round(lastPong - m.t);
+    }
+  };
+  sock.onclose = () => { if (sock === ws) dropWs(true); };
+  sock.onerror = () => {};
+}
+
+/* ── видео: кадр из <video> → canvas → JPEG → сокет ── */
+function grabFrame() {
+  const v = $('preview');
+  if (!wsOpen() || encBusy || !v.videoWidth || v.readyState < 2) return;
+  const t = vTrack();
+  const now = performance.now();
+  const minGap = (t && !t.enabled) ? 200 : 800 / (+$('fps').value || 30); // «картинка выключена» — шлём редко
+  if (now - lastSend < minGap) return;
+  // TCP не теряет данные, а копит их: если сеть не успевает, пропускаем кадры, чтобы не росла задержка
+  if (ws.bufferedAmount > Math.max(300000, lastFrameSize * 2.5)) { skipFrames++; return; }
+  lastSend = now;
+  if (cv.width !== v.videoWidth || cv.height !== v.videoHeight) { cv.width = v.videoWidth; cv.height = v.videoHeight; }
+  cx.drawImage(v, 0, 0);
+  encBusy = true;
+  const sock = ws;
+  cv.toBlob(b => {
+    encBusy = false;
+    if (!b || sock !== ws || !wsOpen()) return;
+    lastFrameSize = b.size; sentBytes += b.size; sentFrames++;
+    ws.send(new Blob([FRAME_TAG, b]));
+  }, 'image/jpeg', (+$('vquality').value || 60) / 100);
+}
+
+function stopCapture() {
+  const v = $('preview');
+  if (rvfcId !== null && v.cancelVideoFrameCallback) { try { v.cancelVideoFrameCallback(rvfcId); } catch {} }
+  rvfcId = null; clearInterval(pollId); pollId = null;
+}
+function armCapture() {
+  stopCapture();
+  const v = $('preview');
+  if (v.requestVideoFrameCallback) {
+    const loop = () => { grabFrame(); rvfcId = v.requestVideoFrameCallback(loop); };
+    rvfcId = v.requestVideoFrameCallback(loop);
+  } else {
+    pollId = setInterval(grabFrame, 10);
+  }
+}
+
+/* ── статистика и контроль связи ── */
+async function pollStats() {
+  if (!wsOpen()) return;
+  const now = performance.now();
+  if (now - lastPong > 8000) { dropWs(true); return; } // соединение «зависло» — переподключаемся
+  sendJSON({ type: 'ping', t: now });
+  if (lastStatT) {
+    const dt = (now - lastStatT) / 1000;
+    statText = [
+      `${(sentBytes * 8 / dt / 1e6).toFixed(1)} Мбит/с`,
+      `${Math.round(sentFrames / dt)} к/с`,
+      rtt != null ? `${rtt} мс` : '',
+      skipFrames ? `пропущено ${skipFrames}` : '',
+    ].filter(Boolean).join(' · ');
+  }
+  sentBytes = sentFrames = skipFrames = 0; lastStatT = now;
+  updateReadout();
+}
+
+async function keepAwake() {
+  try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch {}
+}
+document.addEventListener('visibilitychange', () => { if (wanted && document.visibilityState === 'visible') keepAwake(); });
+
+/* ───────── старт / стоп ───────── */
+async function start() {
+  if (!window.isSecureContext || !navigator.mediaDevices) {
+    setMsg('Браузер не даёт доступ к камере: откройте сайт по https:// и примите сертификат.', true); return;
+  }
+  $('go').disabled = true; setMsg('Запрашиваю доступ к камере…');
+  try {
+    const s = await gum({ video: videoConstraints() });
+    vStream = new MediaStream(s.getVideoTracks());
+    vTrack().enabled = !$('vOff').checked;
+    await populateDevices();
+    attachVideo(); buildCaps();
+    wanted = true; setTally('wait', 'Подключение…');
+    $('go').dataset.on = '1'; $('go').textContent = 'Остановить';
+    await keepAwake();
+    openWs();
+    clearInterval(statsTimer); statsTimer = setInterval(pollStats, 2000);
+    setMsg('');
+  } catch (e) {
+    const denied = e.name === 'NotAllowedError';
+    setMsg(denied ? 'Доступ запрещён. Разрешите камеру в настройках сайта и повторите.' : 'Ошибка: ' + e.message, true);
+    stop(true);
+  }
+  $('go').disabled = false;
+}
+
+function stop(keepMsg) {
+  wanted = false; clearTimeout(reconnectTimer); clearInterval(statsTimer);
+  stopCapture(); dropWs(false); statText = ''; lastStatT = 0;
+  if (vStream) vStream.getTracks().forEach(t => t.stop());
+  vStream = null;
+  $('preview').srcObject = null; $('readout').textContent = '';
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  setTally('off', 'Не подключено');
+  $('go').dataset.on = '0'; $('go').textContent = 'Подключиться к ПК';
+  if (!keepMsg) setMsg('');
+}
+
+$('go').onclick = () => ($('go').dataset.on === '1' ? stop() : start());
+window.addEventListener('pagehide', () => stop());
+
+/* ───────── реакция на настройки ───────── */
+const vRestart = debounce(() => restartVideo(false));
+const vRestartReset = debounce(() => restartVideo(true));
+const on = (id, fn) => $(id).addEventListener('change', () => { saveSettings(); fn(); sendStateSoon(); });
+
+on('camSel', vRestartReset); on('facing', vRestartReset);
+on('res', vRestart); on('fps', vRestart);
+on('vquality', () => {});
+on('vOff', () => { const t = vTrack(); if (t) t.enabled = !$('vOff').checked; });
+on('mirror', sendControl); on('rotate', sendControl); on('outRes', () => { outTouched = true; sendControl(); }); on('outFps', () => { outTouched = true; sendControl(); });
+
+loadSettings();
+</script>
+</body>
+</html>

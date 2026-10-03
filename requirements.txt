@@ -1,0 +1,11 @@
+aiohttp
+av
+numpy
+cryptography
+sounddevice
+pyvirtualcam
+opencv-python-headless
+qrcode
+pyinstaller
+pystray
+pillow
